@@ -4,8 +4,11 @@ This repository contains key statistical analysis projects I completed during my
 
 ## Contents
 DIMAS_STATS_FINAL.Rmd: This R Markdown document details my comprehensive statistical analysis project, covering methodologies, data exploration, and results interpretation.
+
 DIMAS_STATS_FINAL.pdf: A PDF version of my final statistical analysis project, suitable for easy viewing and sharing.
+
 Dimas_Final_Usage_Analysis.pdf: A thorough analysis report on my app, highlighting my skills in data interpretation and report writing.
+
 app.R: An R Shiny application demonstrating my ability to create interactive data applications. This app allows users to assess Low-Income Families in Philadelphia Middle & High Schools.
 
 ## Technologies Used
