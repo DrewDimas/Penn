@@ -1,0 +1,378 @@
+---
+title: "DIMAS_FINAL"
+author: "Drew Dimas"
+date: "2023-03-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+library(survey)
+library(stargazer)
+library(sandwich)
+library(tidyr)
+library(tidyverse)
+library(cowplot)
+require(scales)
+
+load("~/Dropbox/DATA3100/RAW/ANES20Datafor310.Rdata")
+
+
+#Backup
+anesBackup <- anes
+
+```
+
+```{r setup, include=FALSE}
+
+#State
+anes$state <- anes$V203001
+
+#Weight
+anes$weight<- anes$V200010a
+
+#Create weight object
+anes.w <- svydesign(ids = ~1,
+                    data=anes,
+                    weights = anes$weight)
+
+## New Column for Male/Female
+attributes(anes$V201600)
+anes$sex.1F0M <- NA
+anes$sex.1F0M[anes$V201600==2] <- 1
+anes$sex.1F0M[anes$V201600==1] <- 0
+table(anes$sex.1F0M)
+
+#New column for Age 
+attributes(anes$V201507x)
+anes$age <- anes$V201507x
+anes$age[anes$age==-9] <- NA
+
+#Race
+attributes(anes$V201549x)
+anes$V201549x[anes$V201549x %in% c(-9,-8)] <- NA
+anes$white[anes$V201549x==1] <- 1
+anes$white[!(anes$V201549x==1)] <- 0
+anes$black[anes$V201549x==2] <- 1
+anes$black[!(anes$V201549x==2)] <- 0
+anes$hispanic[anes$V201549x==3] <- 1
+anes$hispanic[!(anes$V201549x==3)] <- 0
+anes$asian[anes$V201549x==4] <- 1
+anes$asian[!(anes$V201549x==4)] <- 0
+
+# College Bachelors or More = 1
+attributes(anes$V201510)
+anes$college.1BachMore[anes$V201510 %in% c(-9,-8,95)] <- NA
+anes$college.1BachMore[anes$V201510<6] <- 0
+anes$college.1BachMore[anes$V201510>6] <- 1
+table(anes$college)
+
+##################
+#Prepare variables
+##################
+
+#Biden Feeling Thermometer
+anes$biden.ft <- anes$V201151
+  
+anes$biden.ft[anes$biden.ft %in% c(-9,-4,998)] <- NA
+summary(anes$biden.ft)
+
+## Parties
+attributes(anes$V201231x)
+anes$parties[anes$V201231x %in% c(-9,-8)] <- NA
+anes$parties[anes$V201231x %in% c(5,6,7)] <- "Republican"
+anes$parties[anes$V201231x %in% c(4)] <- "Independent"
+anes$parties[anes$V201231x %in% c(1,2,3)] <- "Democrat"
+
+## Are things in the country on the right direction vs wrong direction
+attributes(anes$V201114)
+
+anes$RD1WT0[anes$V201114 %in% c(-9,-8)] <- NA
+anes$RD1WT0[anes$V201114==2] <- 0
+anes$RD1WT0[anes$V201114==1] <- 1
+
+## RECALL OF LAST (2016) PRESIDENTIAL VOTE CHOICE // 1 = Clinton // 2 = Trump
+attributes(anes$V201103)
+
+anes$HC1DT0[anes$V201103==1] <- 1
+anes$HC1DT0[anes$V201103==2] <- 0
+
+
+## Data Cleanup
+anes <- select(anes, RD1WT0, HC1DT0, biden.ft, parties, state, sex.1F0M, age, white, black, hispanic, asian, college.1BachMore, weight, everything())
+
+```
+
+# Introduction and Theory
+
+The 2016 Presidential election was a truly divisive time for the country. Donald Trump's presidency was filled with riots, protests, and even an insurrection. Was the public’s view regarding the direction of the United States impacting it’s perception of Joe Biden in the 2020 election? Similarly, did political affiliation or who they voted for in 2016 influence the public’s perception of Biden? Due to the importance of these questions, an analysis should be conducted to aid in the understanding of the possible explanations.
+
+# Description of Main Variables
+
+To investigate this relationship further, I used the American National Election Study, an academic study of the American adult population with a sample size of around 8000 individuals.
+
+The main outcome variable I will be focused on is the "Feeling Thermometer" for now President Joe Biden. This question asks respondents how "warm" they feel towards Biden, where 0 means "cold" and 100 means "hot". Individuals are instructed that 50 degrees means that "you don't feel particularly warm or cold toward the person." The mean of this variable, 49.24 makes it seem like Americans are ambivalent towards Joe Biden, but the standard deviation of 34.5 indicates that views are highly variable. This is due to the distribution of this variable which has been displayed below. There are many individuals who rate Biden very cold, many as low as 0. On the other hand, there are also large groups that feel warmly about him, with notable ratings spikes in the range of 65-85.
+
+```{r echo=F, fig.align='center', message=FALSE, warning=FALSE, out.width="65%", results="asis"}
+#Visualization of key variables
+plot(density(anes$biden.ft,na.rm=T), lwd=2,
+     xlim=c(0,100),
+     xlab="Feeling: Cold(0) to Hot (100)",
+     main="Distribution of Biden Feeling Thermometer")
+```
+
+The main objective of this study is to examine the extent to which two variables come together to elucidate sentiments regarding Biden. These two variables are the perceived direction of the Nation, and who the respondent voted for in the 2016 election.
+
+Model A - The perceived direction of the Nation is determined by respondents’ answers to the question "Are things in the Country on the right track?" Individuals were prompted with four possible answers: Right direction, Wrong direction, Don't know, and Refused. I have removed all variables other than right direction and wrong direction, in order to hone in on the relationship of those who have strong opinions on this issue in relation to the Biden thermometer.
+
+Model B - Who the respondent voted for in 2016 has been narrowed down to Hilary Clinton, Donald Trump, and all Independent candidates. All other options (Don't know, Refused, Inapplicable) have been removed.
+
+```{r echo=F, message=FALSE, warning=FALSE, out.width="70%", fig.align='center'}
+#Plot for if the Country is headed in right direction
+track.plot <- ggplot(anes[!anes$parties %in% c(NA),], aes(x = RD1WT0, y = (..count..)/sum(..count..), fill = parties)) +
+  geom_bar(position = "dodge", show.legend = FALSE) +
+  scale_y_continuous(labels = percent) +
+  scale_x_discrete(limit = c(0, 1),
+                   labels = c("Wrong", "Right")) +
+  scale_fill_manual(values = c("blue","green","red")) +
+  scale_fill_discrete(labels=c('Dem.', 'Ind.', 'Rep.')) +
+  labs(title = "USA headed in the right direction?", y = "Percent of Surveyed Voters", x = " ") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#Plot for the 2016 election 
+plot.2016 <- ggplot(anes[!anes$parties %in% c(NA),], aes(x = HC1DT0, y = (..count..)/sum(..count..), fill = parties)) +
+  geom_bar(position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  scale_x_discrete(limit = c(0, 1),
+                   labels = c("Donald Trump", "Hilary Clinton")) +
+  scale_fill_manual(values = c("blue","green","red")) +
+  theme(legend.position="bottom", legend.title = element_blank()) +
+  scale_fill_discrete(labels=c('Dem.', 'Ind.', 'Rep.')) +
+  labs(title = "2016 Presidential Vote Choice", y = " ", x = " ") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+##Side by side ggplots           
+plot_grid(track.plot, plot.2016, labels="AUTO")
+```
+
+# Difference in Means
+
+The main relationship of interest is between the perceived direction of the Country (by political party) and feelings towards Biden. To take a first look at this, I have displayed the distribution of feelings towards Biden among these two groups centered in the panel below. In the primary figure (Fig. 1) it is clear that there is a larger correlation between those who think the country is headed in the right direction and gave a 0 rating to Biden than the inverse. The inverse, those who think the Country is headed in the wrong direction, peaks around 85. -- I will now assess the perceived direction based on political party along with the respondents previous Presidential vote:
+
+The top left figure (Fig. 2) shows 104 respondents who are Democrat and voted for Trump in 2016. Those who thought the country is headed in the wrong direction had an average Biden Thermometer of 58.90. The difference in mean is 15.82 for those that thought the Country is headed in the right direction, which leads them to have an average Biden Thermometer of 43.08.
+
+The top right figure (Fig. 3) shows 2688 respondents who are Democrat and voted for Clinton in 2016. Those who thought the Country is headed in the wrong direction had an average Biden Thermometer of 78.94. The difference in mean is 9.5 for those that thought the Country is headed in the right direction, which leads them to have an average Biden Thermometer of 68.9.
+
+The bottom left figure (Fig. 4) shows 964 respondents who are Republican and voted for Trump in 2016. Those who thought the Country is headed in the wrong direction had an average Biden Thermometer of 18.50. The difference in mean is 5.4 for those that thought the Country is headed in the right direction, which leads them to have an average Biden Thermometer of 13.1.
+
+The bottom right figure (Fig. 5) shows 136 respondents who are Republican and voted for Clinton in 2016. Those who thought the Country is headed in the wrong direction had an average Biden Thermometer of 59.29. The difference in mean is 23.22 for those that thought the Country is headed in the right direction, which leads them to have an average Biden Thermometer of 36.07.
+
+The figures below showcase that respondents that vote for their registered party have a much smaller difference in mean compared to the rare instances of those voting against their party. This shows that partisanship plays a large role in voting whether or not the respondent thinks the country is headed in the right direction.
+
+```{r eval=FALSE, include=FALSE}
+t.all <- svyttest(biden.ft ~ RD1WT0, anes.w)
+
+#Anes Rep only - Vote for Clinton
+anes.rep.HC <- subset(anes, parties=="Republican" & HC1DT0==1)
+
+#Anes Rep only - Vote for Trump
+anes.rep.DT <- subset(anes, parties=="Republican" & HC1DT0==0)
+
+## Anes Dem only - Vote for Clinton
+anes.dem.HC <- subset(anes, parties=="Democrat" & HC1DT0==1)
+
+## Anes Dem only - Vote for Trump
+anes.dem.DT <- subset(anes, parties=="Democrat" & HC1DT0==0)
+
+#Republicans that voted for Clinton
+anes.w.repHC <- svydesign(ids = ~1,
+                      data=anes.rep.HC,
+                      weights = anes.rep.HC$weight)
+
+t.rep <- svyttest(biden.ft ~ RD1WT0, anes.w.repHC)
+
+summary(lm(biden.ft ~ RD1WT0, data = anes.rep.HC, weights = weight))
+
+#Republicans that voted for Trump
+anes.w.repDT <- svydesign(ids = ~1,
+                      data=anes.rep.DT,
+                      weights = anes.rep.DT$weight)
+
+t.rep <- svyttest(biden.ft ~ RD1WT0, anes.w.repDT)
+
+summary(lm(biden.ft ~ RD1WT0, data = anes.rep.DT, weights = weight))
+
+#Democrats that voted for Clinton
+anes.w.demHC <- svydesign(ids = ~1,
+                      data=anes.dem.HC,
+                      weights = anes.dem.HC$weight)
+
+t.dem <- svyttest(biden.ft ~ RD1WT0, anes.w.demHC)
+
+summary(lm(biden.ft ~ RD1WT0, data = anes.dem.HC, weights = weight))
+
+#Democrats that voted for Trump
+anes.w.demDT <- svydesign(ids = ~1,
+                      data=anes.dem.DT,
+                      weights = anes.dem.DT$weight)
+
+t.dem <- svyttest(biden.ft ~ RD1WT0, anes.w.demDT)
+
+summary(lm(biden.ft ~ RD1WT0, data = anes.dem.DT, weights = weight))
+
+```
+
+```{r, echo=F, fig.align='center', fig.show="hold",out.width="50%"}
+#Primary plot, all voters // Wrong vs right
+plot(density(anes$biden.ft[anes$RD1WT0==0], na.rm=T),
+     lwd=2, col="forestgreen", ylim=c(0,0.06), xlim=c(0,100),
+     main="Fig. 1 All Voters - Wrong vs Right Direction")
+points(density(anes$biden.ft[anes$RD1WT0==1],na.=T), 
+       lwd=2, col="purple", type="l")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==0], na.rm=T), lty=2, col="forestgreen")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==1], na.rm=T), lty=2, col="purple")
+legend("topright", c("Wrong Direction", "Right Direction"), lty=c(1,1), lwd=c(2,2), 
+       col=c("forestgreen", "purple"))
+```
+
+
+```{r, echo=F, fig.show="hold",out.width="50%"}
+## Dem that voted for Trump
+plot(density(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Democrat" & anes$HC1DT0 == 0], na.rm=T),
+     lwd=2, col="forestgreen", ylim=c(0,0.06), xlim=c(0,100),
+     main="Fig. 2 Democratic Voters - Voted for Trump 2016")
+points(density(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Democrat" & anes$HC1DT0 == 0],na.=T), 
+       lwd=2, col="purple", type="l")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Democrat" & anes$HC1DT0 == 0], na.rm=T), lty=2, col="forestgreen")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Democrat" & anes$HC1DT0 == 0], na.rm=T), lty=2, col="purple")
+legend("topright", c("Wrong Direction", "Right Direction"), lty=c(1,1), lwd=c(2,2), 
+       col=c("forestgreen", "purple"))
+
+## Dem that voted for Clinton
+plot(density(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Democrat" & anes$HC1DT0==1], na.rm=T),
+     lwd=2, col="forestgreen", ylim=c(0,0.06), xlim=c(0,100),
+     main="Fig. 3 Democratic Voters - Voted for Clinton 2016")
+points(density(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Democrat" & anes$HC1DT0==1],na.=T), 
+       lwd=2, col="purple", type="l")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Democrat" & anes$HC1DT0==1], na.rm=T), lty=2, col="forestgreen")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Democrat" & anes$HC1DT0==1], na.rm=T), lty=2, col="purple")
+legend("topright", c("Wrong Direction", "Right Direction"), lty=c(1,1), lwd=c(2,2), 
+       col=c("forestgreen", "purple"))
+```
+
+```{r, echo=F, fig.show="hold",out.width="50%"}
+## Rep that voted for Trump
+plot(density(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Republican" & anes$HC1DT0 == 0], na.rm=T),
+     lwd=2, col="forestgreen", ylim=c(0,0.06), xlim=c(0,100),
+     main="Fig. 4 Republican Voters - Voted for Trump 2016")
+points(density(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Republican" & anes$HC1DT0 == 0],na.=T), 
+       lwd=2, col="purple", type="l")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Republican" & anes$HC1DT0 == 0], na.rm=T), lty=2, col="forestgreen")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Republican" & anes$HC1DT0 == 0], na.rm=T), lty=2, col="purple")
+legend("topright", c("Wrong Direction", "Right Direction"), lty=c(1,1), lwd=c(2,2), 
+       col=c("forestgreen", "purple"))
+
+## Rep that voted for Clinton
+plot(density(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Republican" & anes$HC1DT0==1], na.rm=T),
+     lwd=2, col="forestgreen", ylim=c(0,0.06), xlim=c(0,100),
+     main="Fig. 5 Republican Voters - Voted for Clinton 2016")
+points(density(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Republican" & anes$HC1DT0==1],na.=T), 
+       lwd=2, col="purple", type="l")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==0 & anes$parties=="Republican" & anes$HC1DT0==1], na.rm=T), lty=2, col="forestgreen")
+abline(v=mean(anes$biden.ft[anes$RD1WT0==1 & anes$parties=="Republican" & anes$HC1DT0==1], na.rm=T), lty=2, col="purple")
+legend("topright", c("Wrong Direction", "Right Direction"), lty=c(1,1), lwd=c(2,2), 
+       col=c("forestgreen", "purple"))
+
+```
+
+# Regression Analysis
+Those that voted for their registered party accounted for 94% of the respondents assessed above. In this case, a difference in means analysis showed minimal support for the relationship of perceived direction of the Country and feelings towards Biden. For the very few respondents who did not vote for their party, the direction of the country is more impactful and led to a much larger variance in mean. 
+
+Since that analysis simplified key variables and didn’t allow the use of control variables, both of these issues can be seen further through OLS regression. In the analysis below I will look at all respondents and treat both perceived direction and 2016 votes as continuous variables. Presidential elections are highly structured by the state an individual lives in. Because of the electoral college, the intensity and nature of the election changes if an individual is in Tennessee or Pennsylvania. This means that the errors we make in regression might be systematically correlated to states: perceived direction and 2016 votes might predict feelings better in states like Pennsylvania, because those individuals are incentivized to pay attention to politics. Because of this, in all specifications below I use robust standard errors clustered by state.
+To begin, Models 1-3 in Table 1 display the direct effects of perceived direction and the 2016 votes in relation to feelings towards Biden.
+
+```{r, echo=F}
+#percent calc of voting for party
+#104+2688+964+136 // (2688+964)/3892
+
+#Biden therm and Right direction/Wrong
+m1 <- lm(biden.ft ~  RD1WT0, data=anes, weights= anes$weight)
+m1.vcov <- vcovCL(m1, cluster=anes$state)
+m1.se <- sqrt(diag(m1.vcov))
+
+#Biden therm and 2016 Presidential votes
+m2 <- lm(biden.ft ~ HC1DT0 , data=anes, weights= anes$weight)
+m2.vcov <- vcovCL(m2, cluster=anes$state)
+m2.se <- sqrt(diag(m2.vcov))
+
+m3 <- lm(biden.ft ~ RD1WT0 + HC1DT0 , data=anes, weights= anes$weight)
+m3.vcov <- vcovCL(m3, cluster=anes$state)
+m3.se <- sqrt(diag(m3.vcov))
+```
+
+
+```{r, echo=F, results = "asis", out.width="100%"}
+#Display of above three models
+stargazer(m1, m2,m3,
+          se=list(m1.se,m2.se,m3.se),
+          dep.var.labels = "Biden Feeling Thermometer",
+          covariate.labels = c("Direction","Last Election"),
+          title = "Direct Effects",
+          digits=2,
+          float=T,
+          single.row = T,
+          column.sep.width = "1pt",
+          font.size = "small",
+          header = F,
+          style="ajps",
+          omit.stat = c("rsq","f", "ser"),
+          star.cutoffs = c(.05),
+          notes.append = FALSE,
+          notes = c("OLS regression weighted to US adult population..", "Robust standard errors clustered by state. *p<0.05"))
+
+
+```
+Model 1 shows the bi-variate impact of perceived direction on feelings towards Biden. As seen above, this relationship is negative, with those who think the Country is headed in the wrong direction having an average -38.80 on the Biden Thermometer. Model 2 looks at the direct relationship between the 2016 election and feeling towards Biden. This relationship is in the expected direction, with those who voted for Clinton having a 57.14 increase in feeling towards Biden from the 18.80 of those who voted for Trump. Model 3 looks at the direct effect of these variables while holding constant the other. There is still a negative relationship for direction and positive relationship for Clinton votes and feelings towards Biden, but the effect of perceived direction is highly attenuated. This offers continued support on the strength of partisanship with regard to voting, especially since the USA has a history of it playing such an important role in politics. The size of each relationship between the two main variables and attitudes towards Biden is significant enough to reject the null hypothesis that the true relationships in the population are non-existent.
+
+The primary interest, however, is determining how the relationship between perceived direction and feelings towards Biden changes alongside the respondents vote in 2016. To do so, we run a regression where the two variables are interacted. These regressions are presented in Table 2 below. The coefficient on the interaction term represents how the effect of perceived direction changes based on 2016 votes. When perceived direction increases by one unit the effect of 2016 vote choice decreases by -12.97.
+
+```{r include=FALSE}
+m4 <- lm(biden.ft ~ RD1WT0*HC1DT0 , data=anes, weights= anes$weight)
+m5 <- lm(biden.ft ~ RD1WT0*HC1DT0 + parties + age + white + black + asian + hispanic, data=anes, weights= anes$weight)
+m6 <- lm(biden.ft ~ RD1WT0*HC1DT0 + parties + age + black, data=anes, weights= anes$weight)
+```
+
+```{r, echo=F, results = "asis", out.width="100%"}
+#Display of above three models // INCLUDES INTERACTION
+stargazer(m4,m5, m6,
+          dep.var.labels = "Biden Feeling Thermometer",
+          covariate.labels = c("Direction","Last Election","Independent","Republican",
+                               "Age","White","Black","Asian", "Hispanic",
+                               "Direction*Last Election"),
+          title = "Interactive Effects",
+          digits=2,
+          float=T,
+          single.row = T,
+          column.sep.width = "1pt",
+          font.size = "small",
+          header = F,
+          style="ajps",
+          omit.stat = c("rsq","f", "ser"),
+          star.cutoffs = c(.05),
+          notes.append = FALSE,
+          notes = c("OLS regression weighted to US adult population.", "Robust standard errors clustered by state. *p<0.05"))
+```
+
+Model 2 in Table 2 is whether there are ommited variables that might explain this relationship between perceived direction, 2016 votes, and feelings towards Biden. I have included a number of potential individual characteristics that might explain this relationship. For example, individuals that identify as a Republican have the largest negative correlation at -29.72. The flip side of this can be seen with the Last Election variable indicating that those that voted for Clinton have an average increase of 27.94 on the Biden Thermometer.
+
+Another important factor is Race: White and Hispanic Americans both have a negative relationship with the Biden Thermometer, while Black and Asian Americans have a positive one. Their effects on the thermometer are smaller than any of our other independent variables, showcasing that there are more important factors in what makes someone feel warm or cold toward Joe Biden. 
+
+I considered the standard errors for this regression and how they can be improved by creating Model 3, which does not have any of the races with an insignificant p-value. This led to a decrease in the standard errors in multiple independent variables. Though the R-Squared value is the same and explains 70% of the variance, Model 3 is a more accurate model due to the lower standard errors.
+
+# Conclusion
+
+The research and analysis suggest that there is a weak correlation between the perceived direction of the country and people's sentiments towards the current President Joe Biden. However, there is a more noticeable correlation between people's 2016 voting patterns, which generally align with their political party, and their views on Biden.
+
+Partisanship has shown that in the USA people vote for their own parties because of their shared values and beliefs, loyalty, and media influence. It allows them to express their political beliefs and feel a sense of belonging to a political community. If a person is a Democrat, they usually have higher ratings on the Biden Feeling thermometer, and if they are a Republican they usually have a much lower rating. One approach for future research on this topic could be the implementation of blind survey questions, which would aim to elicit unbiased responses from participants, regardless of their political affiliation.
